@@ -1,0 +1,5 @@
+tokenizers
+pandas
+datasets
+torch
+transformers
