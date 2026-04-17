@@ -4,3 +4,4 @@ datasets
 torch
 transformers
 weave
+wandb
