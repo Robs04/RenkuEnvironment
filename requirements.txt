@@ -5,3 +5,4 @@ torch
 transformers
 weave
 wandb
+libgmp-dev
