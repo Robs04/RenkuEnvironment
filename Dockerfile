@@ -1,49 +1,50 @@
-########################################################
-#        Renku install section - do not edit           #
+# Base images with other frontends are available - simply replace "vscodium" with
+# "jupyter" or "ttyd".
+FROM ghcr.io/swissdatasciencecenter/renku/py-basic-vscodium:2.15.0
 
-FROM renku/renkulab-py:3.10-0.22.0 as builder
-
-# RENKU_VERSION determines the version of the renku CLI
-# that will be used in this image. To find the latest version,
-# visit https://pypi.org/project/renku/#history.
-ARG RENKU_VERSION=2.9.2
-
-# Install renku from pypi or from github if a dev version
-RUN if [ -n "$RENKU_VERSION" ] ; then \
-        source .renku/venv/bin/activate ; \
-        currentversion=$(renku --version) ; \
-        if [ "$RENKU_VERSION" != "$currentversion" ] ; then \
-            pip uninstall renku -y ; \
-            gitversion=$(echo "$RENKU_VERSION" | sed -n "s/^[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(rc[[:digit:]]\+\)*\(\.dev[[:digit:]]\+\)*\(+g\([a-f0-9]\+\)\)*\(+dirty\)*$/\4/p") ; \
-            if [ -n "$gitversion" ] ; then \
-                pip install --no-cache-dir --force "git+https://github.com/SwissDataScienceCenter/renku-python.git@$gitversion" ;\
-            else \
-                pip install --no-cache-dir --force renku==${RENKU_VERSION} ;\
-            fi \
-        fi \
-    fi
-#             End Renku install section                #
-########################################################
-
-FROM renku/renkulab-py:3.10-0.22.0
-
-# Uncomment and adapt if code is to be included in the image
-# COPY src /code/src
-
-# Uncomment and adapt if your R or python packages require extra linux (ubuntu) software
-# e.g. the following installs apt-utils and vim; each pkg on its own line, all lines
-# except for the last end with backslash '\' to continue the RUN line
-#
+# Install OS-level build/runtime dependencies as root. These packages are
+# required by ghcup/GHC and cannot be installed later in an unprivileged session.
 USER root
+
 RUN apt-get update && \
-   apt-get install -y --no-install-recommends \
-   apt-utils \
-   vim
-RUN apt install -y ghc
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        clang-15 \
+        curl \
+        libffi-dev \
+        libgmp-dev \
+        libncurses-dev \
+        llvm-15 \
+        xz-utils \
+        zlib1g-dev && \
+    rm -rf /var/lib/apt/lists/*
 
+# Install the Haskell toolchain as the regular Renku user. ghcup is a user-space
+# toolchain manager and installs into $HOME, which avoids root-owned files in the
+# user's Haskell directories. This block is intentionally before requirements.txt
+# is copied so the slow GHC install stays cached when Python dependencies change.
+USER 1000
+ENV HOME=/home/renku
+ENV PATH="${HOME}/.ghcup/bin:${HOME}/.cabal/bin:${PATH}"
 
-# install the python dependencies
-COPY requirements.txt /tmp/
-RUN pip install -r /tmp/requirements.txt --no-cache-dir
+RUN export BOOTSTRAP_HASKELL_NONINTERACTIVE=1 \
+        BOOTSTRAP_HASKELL_MINIMAL=1 \
+        BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 && \
+    curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh && \
+    ghcup install ghc 9.10.1 && \
+    ghcup set ghc 9.10.1 && \
+    ghcup install cabal 3.12.1.0 && \
+    ghc --version && \
+    cabal --version
 
-COPY --from=builder ${HOME}/.renku/venv ${HOME}/.renku/venv
+# Switch back to root for Python dependencies because the Paketo/Python layer
+# under /layers is not writable by the regular user. Use the CNB launcher rather
+# than a hard-coded layer path so this is resilient to base image changes.
+USER root
+COPY requirements.txt /tmp/requirements.txt
+RUN /cnb/lifecycle/launcher python -m pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
+
+# Run the final image as the regular Renku user.
+USER 1000
